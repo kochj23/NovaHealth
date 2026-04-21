@@ -1,0 +1,31 @@
+name: NovaHealth
+options:
+  bundleIdPrefix: net.digitalnoise
+  deploymentTarget:
+    iOS: "16.0"
+  xcodeVersion: "16.0"
+settings:
+  DEVELOPMENT_TEAM: QRRCB8HB3W
+  CODE_SIGN_STYLE: Automatic
+  SWIFT_VERSION: "5.9"
+  MARKETING_VERSION: "1.0.0"
+  CURRENT_PROJECT_VERSION: 1
+targets:
+  NovaHealth:
+    type: application
+    platform: iOS
+    sources:
+      - NovaHealth
+    settings:
+      INFOPLIST_FILE: NovaHealth/Info.plist
+      CODE_SIGN_ENTITLEMENTS: NovaHealth/NovaHealth.entitlements
+      PRODUCT_BUNDLE_IDENTIFIER: net.digitalnoise.NovaHealth
+      TARGETED_DEVICE_FAMILY: "1"
+      ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    entitlements:
+      path: NovaHealth/NovaHealth.entitlements
+      properties:
+        com.apple.developer.healthkit: true
+        com.apple.developer.healthkit.access: []
+    dependencies:
+      - sdk: HealthKit.framework
