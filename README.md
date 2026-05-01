@@ -1,5 +1,9 @@
 # NovaHealth
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+![Platform](https://img.shields.io/badge/platform-iOS-blue)
+![Language](https://img.shields.io/badge/language-Swift-orange)
+
 **iPhone HealthKit → Nova bridge.** Reads health metrics from HealthKit and pushes them to Nova's local memory server on your Mac. All data stays on your local network — nothing touches the cloud.
 
 Written by Jordan Koch.
@@ -186,6 +190,58 @@ NovaHealth/
 ├── project.yml                 # xcodegen spec
 └── README.md
 ```
+
+## Architecture (Mermaid)
+
+```mermaid
+graph TD
+    A[Withings / Dexcom / Apple Watch] -->|HealthKit| B[NovaHealth iPhone]
+    B --> C[HealthPusher]
+    C --> D{Mode}
+    D -->|Daily| E[collectAndPush]
+    D -->|History| F[exportHistory]
+    E --> G[fetchLatest / fetchTodaySum]
+    F --> H[fetchAllSamples / fetchAllSleep]
+    G --> I[JSON Payload]
+    H --> J[Daily Aggregates]
+    I --> K[HTTP POST WiFi LAN]
+    J --> K
+    K --> L[nova_healthkit_receiver.py :37450]
+    L --> M[JSON Files]
+    L --> N[pgvector Memory]
+    N --> O[nova_health_correlation.py]
+    O --> P[Slack Alerts]
+    
+    subgraph iPhone
+        B
+        C
+        E
+        F
+        G
+        H
+    end
+    
+    subgraph Mac Studio
+        L
+        M
+        N
+        O
+    end
+```
+
+## Test Coverage
+
+| Category | Tests | Description |
+|----------|-------|-------------|
+| HealthPusher | 3 | Singleton, initial state, config |
+| ContentView Formatting | 5 | Key formatting, time ago (now/min/hr/day) |
+| Value Formatting | 11 | All 17 metric types + non-numeric |
+| Data Rounding | 3 | Integer, decimal, small values |
+| Security | 5 | Local URL, no cloud, no PII, timeout, empty data |
+| HKUnit Extension | 1 | beatsPerMinute unit |
+| **Total** | **28** | |
+
+---
 
 ## License
 
