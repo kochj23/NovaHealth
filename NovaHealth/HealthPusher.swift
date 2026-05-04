@@ -12,6 +12,42 @@ class HealthPusher: ObservableObject {
     private let store = HKHealthStore()
     private let serverURL = "http://192.168.1.6:37450/health"
 
+    /// Validates that a URL points to a local RFC 1918 network address.
+    /// Returns true for 10.x.x.x, 172.16-31.x.x, 192.168.x.x, and 127.x.x.x (loopback).
+    /// Logs a warning and returns false if the destination is not on a local network.
+    private func isLocalNetwork(url: URL) -> Bool {
+        guard let host = url.host else {
+            print("[NovaHealth] WARNING: No host in URL — refusing to send health data")
+            return false
+        }
+
+        let components = host.split(separator: ".").compactMap { Int($0) }
+        guard components.count == 4 else {
+            // Could be a hostname — resolve would be needed, but for safety reject non-IP
+            print("[NovaHealth] WARNING: Non-IP host '\(host)' — refusing to send health data to non-local destination")
+            return false
+        }
+
+        let isLocal: Bool
+        switch components[0] {
+        case 10:
+            isLocal = true
+        case 172:
+            isLocal = components[1] >= 16 && components[1] <= 31
+        case 192:
+            isLocal = components[1] == 168
+        case 127:
+            isLocal = true  // loopback
+        default:
+            isLocal = false
+        }
+
+        if !isLocal {
+            print("[NovaHealth] WARNING: Server URL '\(host)' is NOT on a local RFC 1918 network. Health data will NOT be sent.")
+        }
+        return isLocal
+    }
+
     @Published var lastPush: Date?
     @Published var lastResult: String = "Not yet pushed"
     @Published var lastData: [String: Any] = [:]
@@ -182,13 +218,33 @@ class HealthPusher: ObservableObject {
     @Published var historyProgress: String = ""
     @Published var historyRunning: Bool = false
 
+    /// Key used to persist the last successfully exported date for checkpoint/resume
+    private static let lastExportCheckpointKey = "NovaHealth_LastExportDate"
+
+    /// Saves the last successfully pushed date for export checkpointing
+    private func saveExportCheckpoint(_ date: Date) {
+        UserDefaults.standard.set(date.timeIntervalSince1970, forKey: Self.lastExportCheckpointKey)
+    }
+
+    /// Loads the last export checkpoint date, or nil if no checkpoint exists
+    private func loadExportCheckpoint() -> Date? {
+        let interval = UserDefaults.standard.double(forKey: Self.lastExportCheckpointKey)
+        guard interval > 0 else { return nil }
+        return Date(timeIntervalSince1970: interval)
+    }
+
     func exportHistory() async {
         guard await requestAuth() else { return }
         await MainActor.run { historyRunning = true; historyProgress = "Starting..." }
 
         let calendar = Calendar.current
         let endDate = Date()
-        let startDate = calendar.date(byAdding: .year, value: -5, to: endDate)!
+        // Resume from last checkpoint if available, otherwise go back 5 years
+        let defaultStart = calendar.date(byAdding: .year, value: -5, to: endDate)!
+        let startDate = loadExportCheckpoint() ?? defaultStart
+        if loadExportCheckpoint() != nil {
+            await MainActor.run { historyProgress = "Resuming from checkpoint..." }
+        }
 
         let metrics: [(HKQuantityTypeIdentifier, HKUnit, String)] = [
             (.heartRate, .beatsPerMinute(), "heart_rate"),
@@ -221,6 +277,7 @@ class HealthPusher: ObservableObject {
             }
 
             // Push each day as a batch
+            let isoFormatter = ISO8601DateFormatter()
             for (day, values) in byDay.sorted(by: { $0.key < $1.key }) {
                 let avg = values.reduce(0, +) / Double(values.count)
                 let payload: [String: Any] = [
@@ -229,8 +286,12 @@ class HealthPusher: ObservableObject {
                     "sample_count": values.count,
                     "source": "healthkit_history",
                 ]
-                _ = await push(payload)
+                let success = await push(payload)
                 totalPushed += 1
+                // Save checkpoint on successful push so export can resume here on restart
+                if success, let dayDate = isoFormatter.date(from: day + "T00:00:00Z") {
+                    saveExportCheckpoint(dayDate)
+                }
             }
             await MainActor.run { historyProgress = "\(key): \(byDay.count) days exported (\(totalPushed) total)" }
         }
@@ -238,15 +299,22 @@ class HealthPusher: ObservableObject {
         // Sleep history
         await MainActor.run { historyProgress = "Exporting sleep..." }
         let sleepDays = await fetchAllSleep(start: startDate, end: endDate)
+        let sleepISOFormatter = ISO8601DateFormatter()
         for (day, hours) in sleepDays.sorted(by: { $0.key < $1.key }) {
             let payload: [String: Any] = [
                 "date": day,
                 "sleep_hours": round(hours * 100) / 100,
                 "source": "healthkit_history",
             ]
-            _ = await push(payload)
+            let success = await push(payload)
             totalPushed += 1
+            if success, let dayDate = sleepISOFormatter.date(from: day + "T00:00:00Z") {
+                saveExportCheckpoint(dayDate)
+            }
         }
+
+        // Mark export as complete by saving current date as checkpoint
+        saveExportCheckpoint(endDate)
 
         await MainActor.run {
             historyProgress = "Done: \(totalPushed) daily records exported"
@@ -299,28 +367,48 @@ class HealthPusher: ObservableObject {
 
     // MARK: - Push to Nova
 
+    /// Pushes data to the server with retry logic: 3 attempts with exponential backoff (1s, 2s, 4s).
+    /// Validates that the destination is on a local RFC 1918 network before sending.
     private func push(_ data: [String: Any]) async -> Bool {
         guard !data.isEmpty else { return false }
         guard let url = URL(string: serverURL) else { return false }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 15
+
+        // Security: only send health data to local network destinations
+        guard isLocalNetwork(url: url) else { return false }
 
         guard let body = try? JSONSerialization.data(withJSONObject: data) else { return false }
-        request.httpBody = body
 
-        do {
-            let (_, response) = try await URLSession.shared.data(for: request)
-            if let http = response as? HTTPURLResponse {
-                print("[NovaHealth] Push: HTTP \(http.statusCode) — \(data.count) metrics")
-                return (200...299).contains(http.statusCode)
+        let maxAttempts = 3
+        let baseDelay: UInt64 = 1_000_000_000 // 1 second in nanoseconds
+
+        for attempt in 1...maxAttempts {
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.timeoutInterval = 15
+            request.httpBody = body
+
+            do {
+                let (_, response) = try await URLSession.shared.data(for: request)
+                if let http = response as? HTTPURLResponse {
+                    print("[NovaHealth] Push attempt \(attempt): HTTP \(http.statusCode) — \(data.count) metrics")
+                    if (200...299).contains(http.statusCode) {
+                        return true
+                    }
+                }
+            } catch {
+                print("[NovaHealth] Push attempt \(attempt)/\(maxAttempts) failed: \(error)")
             }
-            return false
-        } catch {
-            print("[NovaHealth] Push failed: \(error)")
-            return false
+
+            // Exponential backoff: 1s, 2s, 4s
+            if attempt < maxAttempts {
+                let delay = baseDelay * UInt64(1 << (attempt - 1))
+                try? await Task.sleep(nanoseconds: delay)
+            }
         }
+
+        print("[NovaHealth] Push failed after \(maxAttempts) attempts")
+        return false
     }
 }
 
