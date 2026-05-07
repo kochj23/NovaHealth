@@ -1,0 +1,13 @@
+build/
+DerivedData/
+*.xcuserdata
+*.xcworkspace
+xcuserdata/
+.DS_Store
+*.ipa
+*.dSYM.zip
+*.dSYM
+*.hmap
+*.ipa
+*.xcuserstate
+IDEWorkspaceChecks.plist
