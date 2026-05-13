@@ -8,6 +8,8 @@
 
 **iPhone HealthKit to Nova bridge.** Reads 17 health metrics from HealthKit and pushes them to Nova's local memory server on your Mac. NovaControl exposes the data via `/api/health/snapshot` so Nova can query it directly. All data stays on your local network — nothing touches the cloud.
 
+> **May 2026:** The OpenClaw node.js gateway has been replaced by Nova Gateway v2 (pure Python asyncio). NovaHealth is unaffected — it pushes directly to `nova_healthkit_receiver.py` on the Mac, and NovaControl reads the resulting JSON. No dependency on the gateway layer.
+
 Written by Jordan Koch.
 
 ---
