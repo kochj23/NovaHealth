@@ -2,20 +2,35 @@
 // Written by Jordan Koch
 //
 // Sources: Withings, Dexcom G6/G7, RingCon, 23andMe, Brightside
+//
+// FIX #7: Plain HTTP is intentional — this app ONLY communicates with a receiver
+// on the local RFC 1918 network (192.168.x.x). The isLocalNetwork() guard enforces
+// this at runtime. When mTLS is configured via QR pairing, HTTPS is used instead.
 
 import Foundation
 import HealthKit
 
+// FIX #4: Mark @MainActor to ensure Sendable safety for @Published properties
+// and prevent data races across concurrency boundaries.
+@MainActor
 class HealthPusher: ObservableObject {
     static let shared = HealthPusher()
 
     private let store = HKHealthStore()
-    private let serverURL = "http://192.168.1.6:37450/health"
+
+    /// Base server URL — plain HTTP for LAN-only operation (see FIX #7 comment at top).
+    /// When mTLS is configured, this is overridden with the HTTPS URL from Keychain.
+    private var serverURL: String {
+        if let mtlsURL = MTLSManager.shared.serverURL {
+            return mtlsURL
+        }
+        return "http://192.168.1.6:37450/health"
+    }
 
     /// Validates that a URL points to a local RFC 1918 network address.
     /// Returns true for 10.x.x.x, 172.16-31.x.x, 192.168.x.x, and 127.x.x.x (loopback).
     /// Logs a warning and returns false if the destination is not on a local network.
-    private func isLocalNetwork(url: URL) -> Bool {
+    private nonisolated func isLocalNetwork(url: URL) -> Bool {
         guard let host = url.host else {
             print("[NovaHealth] WARNING: No host in URL — refusing to send health data")
             return false
@@ -23,7 +38,6 @@ class HealthPusher: ObservableObject {
 
         let components = host.split(separator: ".").compactMap { Int($0) }
         guard components.count == 4 else {
-            // Could be a hostname — resolve would be needed, but for safety reject non-IP
             print("[NovaHealth] WARNING: Non-IP host '\(host)' — refusing to send health data to non-local destination")
             return false
         }
@@ -77,6 +91,8 @@ class HealthPusher: ObservableObject {
             if let t = HKQuantityType.quantityType(forIdentifier: id) { types.insert(t) }
         }
         if let sleep = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) { types.insert(sleep) }
+        // Enterprise: workout type for workout tracking
+        types.insert(HKObjectType.workoutType())
         return types
     }()
 
@@ -84,7 +100,7 @@ class HealthPusher: ObservableObject {
         guard HKHealthStore.isHealthDataAvailable() else { return false }
         do {
             try await store.requestAuthorization(toShare: [], read: readTypes)
-            await MainActor.run { isAuthorized = true }
+            isAuthorized = true
             return true
         } catch {
             print("HealthKit auth failed: \(error)")
@@ -94,7 +110,7 @@ class HealthPusher: ObservableObject {
 
     func collectAndPush() async {
         guard await requestAuth() else {
-            await MainActor.run { lastResult = "HealthKit not authorized" }
+            lastResult = "HealthKit not authorized"
             return
         }
 
@@ -146,19 +162,27 @@ class HealthPusher: ObservableObject {
             }
         }
 
+        // Enterprise Feature #2: Add anomaly flags and 7-day trend
+        let anomalyData = await AnomalyDetector.shared.analyzeCurrentMetrics(data)
+        if !anomalyData.isEmpty {
+            data["anomaly_flags"] = anomalyData["anomaly_flags"]
+            data["trend_7d"] = anomalyData["trend_7d"]
+        }
+
         let success = await push(data)
 
-        await MainActor.run {
-            lastPush = Date()
-            lastData = data
-            lastResult = success
-                ? "\(populated) metrics collected"
-                : "Push failed — Mac reachable?"
-        }
+        lastPush = Date()
+        lastData = data
+        lastResult = success
+            ? "\(populated) metrics collected"
+            : "Push failed — queued offline"
     }
 
     // MARK: - HealthKit Queries
 
+    // FIX #8: Separate inBed from actual sleep states.
+    // Only asleepCore, asleepDeep, asleepREM, and asleepUnspecified count as sleep.
+    // inBed is tracked separately and NOT included in sleep_hours.
     private func fetchSleepHours() async -> Double? {
         guard let sleepType = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) else { return nil }
         let start = Calendar.current.startOfDay(for: Date().addingTimeInterval(-86400))
@@ -166,19 +190,20 @@ class HealthPusher: ObservableObject {
 
         return await withCheckedContinuation { cont in
             let query = HKSampleQuery(sampleType: sleepType, predicate: predicate, limit: 0, sortDescriptors: nil) { _, samples, _ in
-                var total: TimeInterval = 0
+                var totalAsleep: TimeInterval = 0
                 if let categorySamples = samples as? [HKCategorySample] {
                     for s in categorySamples {
                         let val = HKCategoryValueSleepAnalysis(rawValue: s.value)
+                        // FIX #8: Only count actual sleep states, NOT inBed
                         if val == .asleepCore || val == .asleepDeep || val == .asleepREM
-                            || val == .asleepUnspecified || val == .inBed {
-                            total += s.endDate.timeIntervalSince(s.startDate)
+                            || val == .asleepUnspecified {
+                            totalAsleep += s.endDate.timeIntervalSince(s.startDate)
                         }
                     }
                 }
-                cont.resume(returning: total > 0 ? total / 3600.0 : nil)
+                cont.resume(returning: totalAsleep > 0 ? totalAsleep / 3600.0 : nil)
             }
-            store.execute(query)
+            self.store.execute(query)
         }
     }
 
@@ -196,7 +221,7 @@ class HealthPusher: ObservableObject {
                     cont.resume(returning: nil)
                 }
             }
-            store.execute(query)
+            self.store.execute(query)
         }
     }
 
@@ -209,7 +234,7 @@ class HealthPusher: ObservableObject {
             let query = HKStatisticsQuery(quantityType: type, quantitySamplePredicate: predicate, options: .cumulativeSum) { _, stats, _ in
                 cont.resume(returning: stats?.sumQuantity()?.doubleValue(for: unit))
             }
-            store.execute(query)
+            self.store.execute(query)
         }
     }
 
@@ -219,15 +244,15 @@ class HealthPusher: ObservableObject {
     @Published var historyRunning: Bool = false
 
     /// Key used to persist the last successfully exported date for checkpoint/resume
-    private static let lastExportCheckpointKey = "NovaHealth_LastExportDate"
+    private nonisolated static let lastExportCheckpointKey = "NovaHealth_LastExportDate"
 
     /// Saves the last successfully pushed date for export checkpointing
-    private func saveExportCheckpoint(_ date: Date) {
+    private nonisolated func saveExportCheckpoint(_ date: Date) {
         UserDefaults.standard.set(date.timeIntervalSince1970, forKey: Self.lastExportCheckpointKey)
     }
 
     /// Loads the last export checkpoint date, or nil if no checkpoint exists
-    private func loadExportCheckpoint() -> Date? {
+    private nonisolated func loadExportCheckpoint() -> Date? {
         let interval = UserDefaults.standard.double(forKey: Self.lastExportCheckpointKey)
         guard interval > 0 else { return nil }
         return Date(timeIntervalSince1970: interval)
@@ -235,15 +260,22 @@ class HealthPusher: ObservableObject {
 
     func exportHistory() async {
         guard await requestAuth() else { return }
-        await MainActor.run { historyRunning = true; historyProgress = "Starting..." }
+        historyRunning = true
+        historyProgress = "Starting..."
 
         let calendar = Calendar.current
         let endDate = Date()
-        // Resume from last checkpoint if available, otherwise go back 5 years
-        let defaultStart = calendar.date(byAdding: .year, value: -5, to: endDate)!
+
+        // FIX #3: Safe unwrap instead of force unwrap on calendar.date(byAdding:)
+        guard let defaultStart = calendar.date(byAdding: .year, value: -5, to: endDate) else {
+            historyProgress = "Error: Could not compute start date"
+            historyRunning = false
+            return
+        }
+
         let startDate = loadExportCheckpoint() ?? defaultStart
         if loadExportCheckpoint() != nil {
-            await MainActor.run { historyProgress = "Resuming from checkpoint..." }
+            historyProgress = "Resuming from checkpoint..."
         }
 
         let metrics: [(HKQuantityTypeIdentifier, HKUnit, String)] = [
@@ -261,23 +293,25 @@ class HealthPusher: ObservableObject {
             (.distanceWalkingRunning, .mile(), "distance_miles"),
         ]
 
+        // FIX #5: Create ISO8601DateFormatter once outside the loop, reuse throughout
+        let isoFormatter = ISO8601DateFormatter()
+
         var totalPushed = 0
         for (identifier, unit, key) in metrics {
             guard let type = HKQuantityType.quantityType(forIdentifier: identifier) else { continue }
-            await MainActor.run { historyProgress = "Exporting \(key)..." }
+            historyProgress = "Exporting \(key)..."
 
             let samples = await fetchAllSamples(type: type, unit: unit, start: startDate, end: endDate)
             if samples.isEmpty { continue }
 
-            // Group by day
+            // Group by day — FIX #5: reuse isoFormatter instead of creating in loop
             var byDay: [String: [Double]] = [:]
             for (date, value) in samples {
-                let dayKey = ISO8601DateFormatter().string(from: calendar.startOfDay(for: date)).prefix(10)
-                byDay[String(dayKey), default: []].append(value)
+                let dayKey = String(isoFormatter.string(from: calendar.startOfDay(for: date)).prefix(10))
+                byDay[dayKey, default: []].append(value)
             }
 
-            // Push each day as a batch
-            let isoFormatter = ISO8601DateFormatter()
+            // Push each day as a batch — FIX #6: Rate limiting with 100ms delay between POSTs
             for (day, values) in byDay.sorted(by: { $0.key < $1.key }) {
                 let avg = values.reduce(0, +) / Double(values.count)
                 let payload: [String: Any] = [
@@ -292,14 +326,15 @@ class HealthPusher: ObservableObject {
                 if success, let dayDate = isoFormatter.date(from: day + "T00:00:00Z") {
                     saveExportCheckpoint(dayDate)
                 }
+                // FIX #6: Rate limit — 100ms delay between POSTs to avoid overwhelming receiver
+                try? await Task.sleep(nanoseconds: 100_000_000)
             }
-            await MainActor.run { historyProgress = "\(key): \(byDay.count) days exported (\(totalPushed) total)" }
+            historyProgress = "\(key): \(byDay.count) days exported (\(totalPushed) total)"
         }
 
-        // Sleep history
-        await MainActor.run { historyProgress = "Exporting sleep..." }
+        // Sleep history — FIX #5 & #8: reuse formatter, separate inBed from asleep
+        historyProgress = "Exporting sleep..."
         let sleepDays = await fetchAllSleep(start: startDate, end: endDate)
-        let sleepISOFormatter = ISO8601DateFormatter()
         for (day, hours) in sleepDays.sorted(by: { $0.key < $1.key }) {
             let payload: [String: Any] = [
                 "date": day,
@@ -308,19 +343,19 @@ class HealthPusher: ObservableObject {
             ]
             let success = await push(payload)
             totalPushed += 1
-            if success, let dayDate = sleepISOFormatter.date(from: day + "T00:00:00Z") {
+            if success, let dayDate = isoFormatter.date(from: day + "T00:00:00Z") {
                 saveExportCheckpoint(dayDate)
             }
+            // FIX #6: Rate limit between sleep day POSTs
+            try? await Task.sleep(nanoseconds: 100_000_000)
         }
 
         // Mark export as complete by saving current date as checkpoint
         saveExportCheckpoint(endDate)
 
-        await MainActor.run {
-            historyProgress = "Done: \(totalPushed) daily records exported"
-            historyRunning = false
-            lastResult = "History export: \(totalPushed) records"
-        }
+        historyProgress = "Done: \(totalPushed) daily records exported"
+        historyRunning = false
+        lastResult = "History export: \(totalPushed) records"
     }
 
     private func fetchAllSamples(type: HKQuantityType, unit: HKUnit, start: Date, end: Date) async -> [(Date, Double)] {
@@ -337,31 +372,35 @@ class HealthPusher: ObservableObject {
                 }
                 cont.resume(returning: results)
             }
-            store.execute(query)
+            self.store.execute(query)
         }
     }
 
+    // FIX #8: fetchAllSleep now excludes inBed from sleep calculation
     private func fetchAllSleep(start: Date, end: Date) async -> [String: Double] {
         guard let sleepType = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) else { return [:] }
         let predicate = HKQuery.predicateForSamples(withStart: start, end: end, options: .strictStartDate)
 
         return await withCheckedContinuation { cont in
             let query = HKSampleQuery(sampleType: sleepType, predicate: predicate, limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, samples, _ in
+                // FIX #5: Create formatter once for this closure scope (avoids Sendable issue)
+                let isoFormatter = ISO8601DateFormatter()
                 var byDay: [String: TimeInterval] = [:]
                 let cal = Calendar.current
                 if let categorySamples = samples as? [HKCategorySample] {
                     for s in categorySamples {
                         let val = HKCategoryValueSleepAnalysis(rawValue: s.value)
+                        // FIX #8: Only count actual sleep, NOT inBed
                         if val == .asleepCore || val == .asleepDeep || val == .asleepREM
-                            || val == .asleepUnspecified || val == .inBed {
-                            let dayKey = ISO8601DateFormatter().string(from: cal.startOfDay(for: s.startDate)).prefix(10)
-                            byDay[String(dayKey), default: 0] += s.endDate.timeIntervalSince(s.startDate)
+                            || val == .asleepUnspecified {
+                            let dayKey = String(isoFormatter.string(from: cal.startOfDay(for: s.startDate)).prefix(10))
+                            byDay[dayKey, default: 0] += s.endDate.timeIntervalSince(s.startDate)
                         }
                     }
                 }
                 cont.resume(returning: byDay.mapValues { $0 / 3600.0 })
             }
-            store.execute(query)
+            self.store.execute(query)
         }
     }
 
@@ -369,7 +408,8 @@ class HealthPusher: ObservableObject {
 
     /// Pushes data to the server with retry logic: 3 attempts with exponential backoff (1s, 2s, 4s).
     /// Validates that the destination is on a local RFC 1918 network before sending.
-    private func push(_ data: [String: Any]) async -> Bool {
+    /// On failure after all retries, queues payload offline for later delivery.
+    func push(_ data: [String: Any]) async -> Bool {
         guard !data.isEmpty else { return false }
         guard let url = URL(string: serverURL) else { return false }
 
@@ -381,6 +421,11 @@ class HealthPusher: ObservableObject {
         let maxAttempts = 3
         let baseDelay: UInt64 = 1_000_000_000 // 1 second in nanoseconds
 
+        // Choose URLSession based on mTLS configuration
+        let session = MTLSManager.shared.isConfigured
+            ? MTLSManager.shared.secureSession
+            : URLSession.shared
+
         for attempt in 1...maxAttempts {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
@@ -389,10 +434,15 @@ class HealthPusher: ObservableObject {
             request.httpBody = body
 
             do {
-                let (_, response) = try await URLSession.shared.data(for: request)
+                let (_, response) = try await session.data(for: request)
                 if let http = response as? HTTPURLResponse {
                     print("[NovaHealth] Push attempt \(attempt): HTTP \(http.statusCode) — \(data.count) metrics")
                     if (200...299).contains(http.statusCode) {
+                        return true
+                    }
+                    // 409 Conflict = server already has this record (dedup success)
+                    if http.statusCode == 409 {
+                        print("[NovaHealth] Server returned 409 (duplicate) — treating as success")
                         return true
                     }
                 }
@@ -407,7 +457,9 @@ class HealthPusher: ObservableObject {
             }
         }
 
-        print("[NovaHealth] Push failed after \(maxAttempts) attempts")
+        print("[NovaHealth] Push failed after \(maxAttempts) attempts — queuing offline")
+        // Enterprise Feature #5: Queue for offline delivery
+        OfflineQueue.shared.enqueue(data)
         return false
     }
 }

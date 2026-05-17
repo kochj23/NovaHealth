@@ -11,6 +11,11 @@
 		2D249369B0414DBAF913E3D9 /* HealthKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5637331E8DA74F393E084771 /* HealthKit.framework */; };
 		66734EF1C2CEFE155FCDD482 /* NovaHealthApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF7E7F97438412D3F55B6538 /* NovaHealthApp.swift */; };
 		D1E068582669146F77B77182 /* HealthPusher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0065E22493C1FE5894014554 /* HealthPusher.swift */; };
+		AA11223344556677889900A1 /* HealthAlertEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718A9B0C1D3 /* HealthAlertEngine.swift */; };
+		BB22334455667788990011B2 /* AnomalyDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2C3D4E5F6071829B0C1D2E4 /* AnomalyDetector.swift */; };
+		CC33445566778899001122C3 /* WorkoutTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3D4E5F60718293AC1D2E3F5 /* WorkoutTracker.swift */; };
+		DD44556677889900112233D4 /* MTLSManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4E5F60718293A4BD2E3F4A6 /* MTLSManager.swift */; };
+		EE55667788990011223344E5 /* OfflineQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5F60718293A4B5CE3F4A5B7 /* OfflineQueue.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -21,6 +26,11 @@
 		BF7E7F97438412D3F55B6538 /* NovaHealthApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NovaHealthApp.swift; sourceTree = "<group>"; };
 		D7F775D0B87A65690C55ADD4 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		DAA9CF1A5C11CA547391B5F3 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60718A9B0C1D3 /* HealthAlertEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthAlertEngine.swift; sourceTree = "<group>"; };
+		B2C3D4E5F6071829B0C1D2E4 /* AnomalyDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnomalyDetector.swift; sourceTree = "<group>"; };
+		C3D4E5F60718293AC1D2E3F5 /* WorkoutTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkoutTracker.swift; sourceTree = "<group>"; };
+		D4E5F60718293A4BD2E3F4A6 /* MTLSManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MTLSManager.swift; sourceTree = "<group>"; };
+		E5F60718293A4B5CE3F4A5B7 /* OfflineQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfflineQueue.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -63,11 +73,16 @@
 		FEA24B411D28F01848141471 /* NovaHealth */ = {
 			isa = PBXGroup;
 			children = (
+				A1B2C3D4E5F60718A9B0C1D3 /* HealthAlertEngine.swift */,
+				B2C3D4E5F6071829B0C1D2E4 /* AnomalyDetector.swift */,
 				DAA9CF1A5C11CA547391B5F3 /* ContentView.swift */,
 				0065E22493C1FE5894014554 /* HealthPusher.swift */,
 				D7F775D0B87A65690C55ADD4 /* Info.plist */,
+				D4E5F60718293A4BD2E3F4A6 /* MTLSManager.swift */,
 				591C6A91DF29BE0923753E5C /* NovaHealth.entitlements */,
 				BF7E7F97438412D3F55B6538 /* NovaHealthApp.swift */,
+				E5F60718293A4B5CE3F4A5B7 /* OfflineQueue.swift */,
+				C3D4E5F60718293AC1D2E3F5 /* WorkoutTracker.swift */,
 			);
 			path = NovaHealth;
 			sourceTree = "<group>";
@@ -132,9 +147,14 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AA11223344556677889900A1 /* HealthAlertEngine.swift in Sources */,
+				BB22334455667788990011B2 /* AnomalyDetector.swift in Sources */,
 				162900790D3FA6E80220B833 /* ContentView.swift in Sources */,
 				D1E068582669146F77B77182 /* HealthPusher.swift in Sources */,
+				DD44556677889900112233D4 /* MTLSManager.swift in Sources */,
 				66734EF1C2CEFE155FCDD482 /* NovaHealthApp.swift in Sources */,
+				EE55667788990011223344E5 /* OfflineQueue.swift in Sources */,
+				CC33445566778899001122C3 /* WorkoutTracker.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -193,7 +213,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = QRRCB8HB3W;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -206,14 +226,15 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
-				MARKETING_VERSION = 1.0.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 2.0.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 5.9;
 			};
 			name = Release;
@@ -253,7 +274,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = QRRCB8HB3W;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -272,8 +293,8 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
-				MARKETING_VERSION = 1.0.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 2.0.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -281,6 +302,7 @@
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 5.9;
 			};
 			name = Debug;

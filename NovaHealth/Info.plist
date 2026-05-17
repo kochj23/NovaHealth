@@ -17,12 +17,16 @@
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>net.digitalnoise.NovaHealth.refresh</string>
+		<string>net.digitalnoise.NovaHealth.queueDrain</string>
 	</array>
 	<key>NSHealthShareUsageDescription</key>
-	<string>Nova Health reads your sleep, heart rate, HRV, steps, and active energy to send to your local Mac for health trend analysis. Data never leaves your network.</string>
+	<string>Nova Health reads your health metrics (sleep, heart rate, HRV, steps, workouts, SpO2, and more) to send to your local Mac for health trend analysis and anomaly detection. Data never leaves your local network.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>
+		<string>processing</string>
 	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>Camera is used to scan QR codes for secure mTLS pairing with your Mac server.</string>
 </dict>
 </plist>

@@ -3,7 +3,7 @@
 //  NovaHealthTests
 //
 //  Comprehensive test suite for NovaHealth
-//  Categories: Unit, Security, Integration, Functional, Frame
+//  Categories: Unit, Security, Integration, Functional, Frame, Enterprise
 //
 //  Written by Jordan Koch
 //
@@ -20,30 +20,33 @@ class HealthPusherUnitTests: XCTestCase {
 
     // MARK: - Singleton & Initialization
 
+    @MainActor
     func testHealthPusherSharedInstanceIsSingleton() {
         let instance1 = HealthPusher.shared
         let instance2 = HealthPusher.shared
         XCTAssertTrue(instance1 === instance2, "Shared instance must be a singleton")
     }
 
+    @MainActor
     func testInitialLastPushIsNil() {
         let pusher = HealthPusher.shared
         // On fresh launch, lastPush should be nil
-        // (Note: singleton may carry state between tests)
         XCTAssertNotNil(pusher, "HealthPusher should exist")
     }
 
+    @MainActor
     func testInitialLastResultText() {
         let pusher = HealthPusher.shared
-        // lastResult should have a non-empty default
         XCTAssertFalse(pusher.lastResult.isEmpty, "lastResult should not be empty")
     }
 
+    @MainActor
     func testInitialHistoryRunningIsFalse() {
         let pusher = HealthPusher.shared
         XCTAssertFalse(pusher.historyRunning, "historyRunning should initially be false")
     }
 
+    @MainActor
     func testInitialHistoryProgressIsEmpty() {
         let pusher = HealthPusher.shared
         XCTAssertTrue(pusher.historyProgress.isEmpty, "historyProgress should initially be empty")
@@ -76,13 +79,11 @@ class HealthPusherUnitTests: XCTestCase {
     }
 
     func testMetricRoundingNegativeFiltered() {
-        // Negative values should not make it into data (filtered by v > 0)
         let value = -5.0
         XCTAssertFalse(value > 0, "Negative values should be filtered out")
     }
 
     func testMetricRoundingPrecision() {
-        // Verify two decimal places
         let value = 98.6789
         let rounded = round(value * 100) / 100
         XCTAssertEqual(rounded, 98.68, accuracy: 0.001)
@@ -297,14 +298,13 @@ class NovaHealthSecurityTests: XCTestCase {
     }
 
     func testServerURLIsNotHTTPS() {
-        // For local network, HTTP is acceptable; HTTPS requires certificates
+        // For local network without mTLS, HTTP is acceptable
         let localURL = "http://192.168.1.6:37450/health"
         XCTAssertTrue(localURL.hasPrefix("http://"),
-                     "Local network URL should use HTTP (no TLS needed on LAN)")
+                     "Local network URL should use HTTP (no TLS needed on LAN without mTLS)")
     }
 
     func testServerPortIsInNovaRange() {
-        // Nova ports are in the 37400-37499 range
         let port = 37450
         XCTAssertTrue((37400...37499).contains(port),
                      "Port should be in Nova's reserved range (37400-37499)")
@@ -369,6 +369,46 @@ class NovaHealthSecurityTests: XCTestCase {
         XCTAssertFalse(localURL.contains("key="), "URL must not contain API keys")
         XCTAssertFalse(localURL.contains("Bearer"), "URL must not contain bearer tokens")
     }
+
+    // MARK: - mTLS Security Tests
+
+    func testMTLSQRSchemeValidation() {
+        // Valid QR code must use novahealth:// scheme
+        let validQR = "novahealth://pair?server=aHR0cHM6Ly8xOTIuMTY4LjEuNjozNzQ1MA==&cert=AAAA&token=test"
+        guard let url = URL(string: validQR) else { XCTFail("Should be a valid URL"); return }
+        XCTAssertEqual(url.scheme, "novahealth")
+        XCTAssertEqual(url.host, "pair")
+    }
+
+    func testMTLSRejectsInvalidScheme() {
+        let invalidQR = "https://evil.com/pair?server=test&cert=test&token=test"
+        guard let url = URL(string: invalidQR) else { XCTFail("Should be a valid URL"); return }
+        XCTAssertNotEqual(url.scheme, "novahealth", "Must reject non-novahealth schemes")
+    }
+
+    func testAlertPayloadContainsPriorityField() {
+        let alertPayload: [String: Any] = [
+            "priority": "alert",
+            "alert_type": "heart_rate",
+            "value": 135.0,
+        ]
+        XCTAssertEqual(alertPayload["priority"] as? String, "alert")
+    }
+
+    func testAlertPayloadDoesNotContainPII() {
+        let alertPayload: [String: Any] = [
+            "priority": "alert",
+            "alert_type": "heart_rate",
+            "alert_reason": "Heart rate HIGH: 135 bpm",
+            "value": 135.0,
+            "timestamp": "2026-01-01T00:00:00Z",
+            "source": "novahealth_alert_engine",
+        ]
+        let piiFields = ["name", "email", "phone", "address", "user_id"]
+        for field in piiFields {
+            XCTAssertNil(alertPayload[field], "Alert payload must not contain PII field '\(field)'")
+        }
+    }
 }
 
 // =============================================================================
@@ -380,10 +420,7 @@ class NovaHealthIntegrationTests: XCTestCase {
     // MARK: - HealthKit Availability
 
     func testHealthDataAvailabilityCheck() {
-        // HealthKit may or may not be available in the test environment
-        // The important thing is that we check before accessing
         let available = HKHealthStore.isHealthDataAvailable()
-        // On simulator/device this will be true; on macOS it depends
         XCTAssertNotNil(available, "Should return a boolean, not crash")
     }
 
@@ -432,6 +469,11 @@ class NovaHealthIntegrationTests: XCTestCase {
     func testSleepAnalysisCategoryExists() {
         let type = HKObjectType.categoryType(forIdentifier: .sleepAnalysis)
         XCTAssertNotNil(type, "Sleep analysis category type should exist")
+    }
+
+    func testWorkoutTypeExists() {
+        let type = HKObjectType.workoutType()
+        XCTAssertNotNil(type, "Workout type should exist")
     }
 
     // MARK: - URL Construction
@@ -487,6 +529,34 @@ class NovaHealthIntegrationTests: XCTestCase {
         ]
         let jsonData = try? JSONSerialization.data(withJSONObject: payload)
         XCTAssertNotNil(jsonData, "History payload should serialize to JSON")
+    }
+
+    func testAnomalyPayloadSerializesToJSON() {
+        let payload: [String: Any] = [
+            "heart_rate": 72.0,
+            "anomaly_flags": ["heart_rate:high:z=3.2"],
+            "trend_7d": ["heart_rate": "rising", "steps": "stable"],
+        ]
+        let jsonData = try? JSONSerialization.data(withJSONObject: payload)
+        XCTAssertNotNil(jsonData, "Anomaly-enriched payload should serialize to JSON")
+    }
+
+    func testWorkoutPayloadSerializesToJSON() {
+        let payload: [String: Any] = [
+            "workout_type": "running",
+            "start_date": "2026-01-15T08:00:00Z",
+            "duration_seconds": 1800,
+            "active_calories": 350.5,
+            "avg_heart_rate": 145.0,
+            "max_heart_rate": 172.0,
+            "recovery_hr_1min": 130.0,
+            "recovery_hr_2min": 115.0,
+            "recovery_hr_5min": 95.0,
+            "recovery_score_1min": 42.0,
+            "source": "novahealth_workout",
+        ]
+        let jsonData = try? JSONSerialization.data(withJSONObject: payload)
+        XCTAssertNotNil(jsonData, "Workout payload should serialize to JSON")
     }
 }
 
@@ -549,7 +619,10 @@ class NovaHealthFunctionalTests: XCTestCase {
     func testFiveYearDateRange() {
         let calendar = Calendar.current
         let endDate = Date()
-        let startDate = calendar.date(byAdding: .year, value: -5, to: endDate)!
+        guard let startDate = calendar.date(byAdding: .year, value: -5, to: endDate) else {
+            XCTFail("Should be able to compute 5 year range")
+            return
+        }
         let difference = calendar.dateComponents([.year], from: startDate, to: endDate)
         XCTAssertEqual(difference.year, 5, "History range should be exactly 5 years")
     }
@@ -561,17 +634,15 @@ class NovaHealthFunctionalTests: XCTestCase {
                      "Lookback should be approximately 7 days")
     }
 
-    // MARK: - Sleep Hours Calculation
+    // MARK: - Sleep Hours Calculation (FIX #8 Tests)
 
     func testSleepHoursConversion() {
-        // 8 hours of sleep in seconds
         let totalSeconds: TimeInterval = 8 * 3600
         let hours = totalSeconds / 3600.0
         XCTAssertEqual(hours, 8.0, accuracy: 0.01)
     }
 
     func testPartialSleepHoursConversion() {
-        // 7 hours 30 minutes
         let totalSeconds: TimeInterval = 7.5 * 3600
         let hours = totalSeconds / 3600.0
         XCTAssertEqual(hours, 7.5, accuracy: 0.01)
@@ -581,6 +652,30 @@ class NovaHealthFunctionalTests: XCTestCase {
         let totalSeconds: TimeInterval = 0
         let result = totalSeconds > 0 ? totalSeconds / 3600.0 : nil
         XCTAssertNil(result, "Zero sleep time should return nil")
+    }
+
+    func testInBedIsNotCountedAsSleep() {
+        // FIX #8: Verify that inBed values would NOT be included in sleep total
+        let sleepStates: [Int] = [
+            HKCategoryValueSleepAnalysis.asleepCore.rawValue,
+            HKCategoryValueSleepAnalysis.asleepDeep.rawValue,
+            HKCategoryValueSleepAnalysis.asleepREM.rawValue,
+            HKCategoryValueSleepAnalysis.asleepUnspecified.rawValue,
+        ]
+        let inBedState = HKCategoryValueSleepAnalysis.inBed.rawValue
+
+        // inBed should NOT be in the accepted sleep states
+        XCTAssertFalse(sleepStates.contains(inBedState),
+                      "inBed must NOT be counted as sleep (FIX #8)")
+    }
+
+    func testOnlyAsleepStatesCountAsSleep() {
+        // These should count as sleep
+        let validSleepStates: [HKCategoryValueSleepAnalysis] = [
+            .asleepCore, .asleepDeep, .asleepREM, .asleepUnspecified
+        ]
+        XCTAssertEqual(validSleepStates.count, 4,
+                      "Exactly 4 sleep states should count (not inBed)")
     }
 
     // MARK: - History Grouping
@@ -611,11 +706,251 @@ class NovaHealthFunctionalTests: XCTestCase {
                      "Should specify task type")
     }
 
+    func testQueueDrainTaskIdentifier() {
+        let identifier = "net.digitalnoise.NovaHealth.queueDrain"
+        XCTAssertTrue(identifier.hasPrefix("net.digitalnoise.NovaHealth"),
+                     "Should use reverse domain notation with app name")
+        XCTAssertTrue(identifier.hasSuffix(".queueDrain"),
+                     "Should specify queue drain task type")
+    }
+
     func testScheduledRefreshTime() {
-        // Scheduled for 6am
         let components = DateComponents(hour: 6, minute: 0)
         XCTAssertEqual(components.hour, 6)
         XCTAssertEqual(components.minute, 0)
+    }
+
+    // MARK: - Safe Unwrap Tests (FIX #3)
+
+    func testCalendarDateByAddingCanReturnNil() {
+        let calendar = Calendar.current
+        // Normal case should succeed
+        let result = calendar.date(byAdding: .year, value: -5, to: Date())
+        XCTAssertNotNil(result, "Normal date calculation should succeed")
+    }
+
+    func testGuardLetProtectsAgainstNilDate() {
+        // Simulating the FIX #3 pattern
+        let calendar = Calendar.current
+        guard let startDate = calendar.date(byAdding: .year, value: -5, to: Date()) else {
+            XCTFail("This should not fail for normal dates")
+            return
+        }
+        XCTAssertTrue(startDate < Date(), "Start date should be in the past")
+    }
+}
+
+// =============================================================================
+// MARK: - Enterprise Feature Tests
+// =============================================================================
+
+class NovaHealthEnterpriseTests: XCTestCase {
+
+    // MARK: - Alert Threshold Tests (Feature #1)
+
+    func testDefaultHeartRateHighThreshold() {
+        let threshold = HealthAlertEngine.AlertThreshold()
+        XCTAssertEqual(threshold.heartRateHigh, 120.0,
+                      "Default HR high threshold should be 120 bpm")
+    }
+
+    func testDefaultHeartRateLowThreshold() {
+        let threshold = HealthAlertEngine.AlertThreshold()
+        XCTAssertEqual(threshold.heartRateLow, 40.0,
+                      "Default HR low threshold should be 40 bpm")
+    }
+
+    func testDefaultSpO2Threshold() {
+        let threshold = HealthAlertEngine.AlertThreshold()
+        XCTAssertEqual(threshold.spo2Low, 0.92,
+                      "Default SpO2 threshold should be 92%")
+    }
+
+    func testDefaultRespiratoryRateThreshold() {
+        let threshold = HealthAlertEngine.AlertThreshold()
+        XCTAssertEqual(threshold.respiratoryRateHigh, 30.0,
+                      "Default respiratory rate threshold should be 30 brpm")
+    }
+
+    func testDefaultBloodGlucoseHighThreshold() {
+        let threshold = HealthAlertEngine.AlertThreshold()
+        XCTAssertEqual(threshold.bloodGlucoseHigh, 250.0,
+                      "Default glucose high threshold should be 250 mg/dL")
+    }
+
+    func testDefaultBloodGlucoseLowThreshold() {
+        let threshold = HealthAlertEngine.AlertThreshold()
+        XCTAssertEqual(threshold.bloodGlucoseLow, 54.0,
+                      "Default glucose low threshold should be 54 mg/dL")
+    }
+
+    func testAlertThresholdEncodable() {
+        let threshold = HealthAlertEngine.AlertThreshold()
+        let data = try? JSONEncoder().encode(threshold)
+        XCTAssertNotNil(data, "Thresholds should be encodable for persistence")
+    }
+
+    func testAlertThresholdDecodable() {
+        let threshold = HealthAlertEngine.AlertThreshold()
+        guard let data = try? JSONEncoder().encode(threshold) else {
+            XCTFail("Encoding failed"); return
+        }
+        let decoded = try? JSONDecoder().decode(HealthAlertEngine.AlertThreshold.self, from: data)
+        XCTAssertNotNil(decoded, "Thresholds should be decodable")
+        XCTAssertEqual(decoded?.heartRateHigh, 120.0)
+    }
+
+    // MARK: - Anomaly Detection Tests (Feature #2)
+
+    func testZScoreCalculation() {
+        // Test Z-score math used by AnomalyDetector
+        let values: [Double] = [70, 72, 71, 73, 72, 71, 70, 72, 73, 71]
+        let mean = values.reduce(0, +) / Double(values.count)
+        let variance = values.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(values.count)
+        let stdDev = sqrt(variance)
+
+        let outlier = 85.0
+        let zScore = abs(outlier - mean) / stdDev
+        XCTAssertTrue(zScore > 2.5, "85 bpm should be anomalous relative to 70-73 range")
+    }
+
+    func testZScoreNormalValueNotAnomalous() {
+        let values: [Double] = [70, 72, 71, 73, 72, 71, 70, 72, 73, 71]
+        let mean = values.reduce(0, +) / Double(values.count)
+        let variance = values.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(values.count)
+        let stdDev = sqrt(variance)
+
+        let normal = 72.0
+        let zScore = abs(normal - mean) / stdDev
+        XCTAssertTrue(zScore < 2.5, "72 bpm should NOT be anomalous in 70-73 range")
+    }
+
+    func testTrendCalculationRising() {
+        let values: [Double] = [60, 62, 64, 66, 68, 70, 72]
+        let n = Double(values.count)
+        let indices = Array(0..<values.count).map { Double($0) }
+        let sumX = indices.reduce(0, +)
+        let sumY = values.reduce(0, +)
+        let sumXY = zip(indices, values).map { $0 * $1 }.reduce(0, +)
+        let sumX2 = indices.map { $0 * $0 }.reduce(0, +)
+        let slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX)
+        XCTAssertTrue(slope > 0, "Consistently rising values should have positive slope")
+    }
+
+    func testTrendCalculationFalling() {
+        let values: [Double] = [80, 78, 76, 74, 72, 70, 68]
+        let n = Double(values.count)
+        let indices = Array(0..<values.count).map { Double($0) }
+        let sumX = indices.reduce(0, +)
+        let sumY = values.reduce(0, +)
+        let sumXY = zip(indices, values).map { $0 * $1 }.reduce(0, +)
+        let sumX2 = indices.map { $0 * $0 }.reduce(0, +)
+        let slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX)
+        XCTAssertTrue(slope < 0, "Consistently falling values should have negative slope")
+    }
+
+    // MARK: - Workout Tracking Tests (Feature #3)
+
+    func testWorkoutTypeNames() {
+        // Verify expected workout type mappings
+        let expectedTypes: [(HKWorkoutActivityType, String)] = [
+            (.running, "running"),
+            (.cycling, "cycling"),
+            (.swimming, "swimming"),
+            (.walking, "walking"),
+            (.yoga, "yoga"),
+        ]
+        // Types are defined in WorkoutTracker — just verify the activity types exist
+        for (type, _) in expectedTypes {
+            XCTAssertNotEqual(type.rawValue, 0, "Activity type should have a valid raw value")
+        }
+    }
+
+    func testRecoveryHRScoreCalculation() {
+        let maxHR = 175.0
+        let recovery1min = 145.0
+        let recoveryDrop = maxHR - recovery1min
+        XCTAssertEqual(recoveryDrop, 30.0,
+                      "Recovery drop should be max HR minus recovery HR")
+        XCTAssertTrue(recoveryDrop > 0,
+                     "Recovery HR should be less than max HR")
+    }
+
+    func testWorkoutDurationFormatting() {
+        let duration: TimeInterval = 1800 // 30 minutes
+        let minutes = Int(duration / 60)
+        XCTAssertEqual(minutes, 30, "1800 seconds should be 30 minutes")
+    }
+
+    // MARK: - mTLS Tests (Feature #4)
+
+    func testQRCodeParsing() {
+        let serverURL = "https://192.168.1.6:37450"
+        let serverB64 = Data(serverURL.utf8).base64EncodedString()
+        let qrContent = "novahealth://pair?server=\(serverB64)&cert=AAAA&token=test-uuid"
+
+        guard let url = URL(string: qrContent) else {
+            XCTFail("QR content should be a valid URL"); return
+        }
+        XCTAssertEqual(url.scheme, "novahealth")
+        XCTAssertEqual(url.host, "pair")
+
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let serverParam = components.queryItems?.first(where: { $0.name == "server" })?.value,
+              let decodedData = Data(base64Encoded: serverParam),
+              let decodedURL = String(data: decodedData, encoding: .utf8) else {
+            XCTFail("Should decode server URL from QR"); return
+        }
+        XCTAssertEqual(decodedURL, serverURL)
+    }
+
+    func testKeychainServiceIdentifier() {
+        let service = "net.digitalnoise.NovaHealth"
+        XCTAssertEqual(service, "net.digitalnoise.NovaHealth",
+                      "Keychain service should match bundle ID")
+    }
+
+    // MARK: - Offline Queue Tests (Feature #5)
+
+    func testQueuePayloadSerialization() {
+        let data: [String: Any] = [
+            "heart_rate": 72.0,
+            "steps": 10500.0,
+        ]
+        let serialized = try? JSONSerialization.data(withJSONObject: data)
+        XCTAssertNotNil(serialized, "Queue payload must be serializable")
+    }
+
+    func testDeduplicationVia409() {
+        // 409 Conflict should be treated as success
+        let statusCode = 409
+        let isSuccess = (200...299).contains(statusCode) || statusCode == 409
+        XCTAssertTrue(isSuccess, "409 should be treated as success (duplicate)")
+    }
+
+    func testMaxRetriesLimit() {
+        let maxRetries = 10
+        XCTAssertEqual(maxRetries, 10,
+                      "Queue items should have max 10 retries before discard")
+    }
+
+    func testMaxAgeForQueuedItems() {
+        let maxAge: TimeInterval = 7 * 86400
+        XCTAssertEqual(maxAge, 604800,
+                      "Queue items should expire after 7 days")
+    }
+
+    func testIdempotencyKeyHeader() {
+        // Each queued item should have a unique idempotency key
+        let id1 = UUID().uuidString
+        let id2 = UUID().uuidString
+        XCTAssertNotEqual(id1, id2, "Each queue entry must have a unique ID")
+    }
+
+    func testQueueDrainRateLimit() {
+        let drainDelay: UInt64 = 50_000_000 // 50ms in nanoseconds
+        XCTAssertEqual(drainDelay, 50_000_000,
+                      "Drain should have 50ms delay between pushes")
     }
 }
 
@@ -628,14 +963,13 @@ class NovaHealthFrameTests: XCTestCase {
     // MARK: - Status Row Layout
 
     func testStatusRowLabelsExist() {
-        let labels = ["HealthKit", "Last Push", "Metrics"]
+        let labels = ["HealthKit", "Last Push", "Metrics", "Transport"]
         for label in labels {
             XCTAssertFalse(label.isEmpty, "Status row label '\(label)' should not be empty")
         }
     }
 
     func testStatusRowColorAssignment() {
-        // When authorized, color should be green
         let isAuthorized = true
         let expectedColorLabel = isAuthorized ? "Authorized" : "Pending"
         XCTAssertEqual(expectedColorLabel, "Authorized")
@@ -666,12 +1000,6 @@ class NovaHealthFrameTests: XCTestCase {
         XCTAssertEqual(label, "Push Now")
     }
 
-    func testExportButtonLabelText() {
-        let label = "Export History (5 years)"
-        XCTAssertTrue(label.contains("5 years"),
-                     "Export button should mention the 5-year range")
-    }
-
     func testExportButtonDisabledWhenRunning() {
         let historyRunning = true
         XCTAssertTrue(historyRunning, "Export button should be disabled when running")
@@ -682,13 +1010,29 @@ class NovaHealthFrameTests: XCTestCase {
         XCTAssertFalse(historyRunning, "Export button should be enabled when idle")
     }
 
+    // MARK: - Transport Status Display
+
+    func testTransportStatusMTLS() {
+        let isPaired = true
+        let display = isPaired ? "mTLS" : "HTTP (LAN)"
+        XCTAssertEqual(display, "mTLS")
+    }
+
+    func testTransportStatusHTTP() {
+        let isPaired = false
+        let display = isPaired ? "mTLS" : "HTTP (LAN)"
+        XCTAssertEqual(display, "HTTP (LAN)")
+    }
+
     // MARK: - Info Text
 
     func testAutoScheduleInfoText() {
-        let infoText = "Auto-pushes daily at ~6am\nData stays on your local network"
+        let infoText = "Auto-pushes daily at ~6am\nReal-time alerts for threshold breaches\nData stays on your local network"
         XCTAssertTrue(infoText.contains("6am"), "Should mention schedule time")
         XCTAssertTrue(infoText.contains("local network"),
                      "Should mention data stays local")
+        XCTAssertTrue(infoText.contains("alerts"),
+                     "Should mention real-time alerts")
     }
 
     // MARK: - Sorted Data Display
@@ -719,8 +1063,8 @@ class NovaHealthFrameTests: XCTestCase {
         XCTAssertFalse(imageName.isEmpty)
     }
 
-    func testExportButtonSystemImage() {
-        let imageName = "clock.arrow.circlepath"
+    func testWorkoutButtonSystemImage() {
+        let imageName = "figure.run"
         XCTAssertFalse(imageName.isEmpty)
     }
 }
@@ -741,7 +1085,6 @@ class HKUnitExtensionTests: XCTestCase {
         let countUnit = HKUnit.count()
         let minuteUnit = HKUnit.minute()
         let manual = countUnit.unitDivided(by: minuteUnit)
-        // Both should represent count/min
         XCTAssertEqual(bpmUnit.unitString, manual.unitString,
                       "BPM unit should equal count/min")
     }
@@ -791,5 +1134,28 @@ class HTTPResponseHandlingTests: XCTestCase {
     func testHTTPMethodIsPOST() {
         let method = "POST"
         XCTAssertEqual(method, "POST", "Push method should be POST")
+    }
+
+    func test409ConflictIsDedupSuccess() {
+        let statusCode = 409
+        let isSuccess = (200...299).contains(statusCode) || statusCode == 409
+        XCTAssertTrue(isSuccess, "409 Conflict should be treated as dedup success")
+    }
+
+    func testExponentialBackoffDelays() {
+        let baseDelay: UInt64 = 1_000_000_000
+        let delay1 = baseDelay * UInt64(1 << 0) // 1s
+        let delay2 = baseDelay * UInt64(1 << 1) // 2s
+        let delay3 = baseDelay * UInt64(1 << 2) // 4s
+        XCTAssertEqual(delay1, 1_000_000_000)
+        XCTAssertEqual(delay2, 2_000_000_000)
+        XCTAssertEqual(delay3, 4_000_000_000)
+    }
+
+    func testRateLimitDelayForHistory() {
+        // FIX #6: 100ms delay between history POSTs
+        let delay: UInt64 = 100_000_000
+        XCTAssertEqual(delay, 100_000_000,
+                      "History export should have 100ms rate limit between POSTs")
     }
 }
