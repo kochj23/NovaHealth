@@ -6,7 +6,7 @@
 ![Tests](https://img.shields.io/badge/tests-99-brightgreen)
 ![Version](https://img.shields.io/badge/version-1.0.0-blue)
 
-**iPhone HealthKit to Nova bridge.** Reads 17 health metrics from HealthKit and pushes them to Nova's local memory server on your Mac. NovaControl exposes the data via `/api/health/snapshot` so Nova can query it directly. All data stays on your local network — nothing touches the cloud.
+**iPhone HealthKit to Nova bridge.** Reads 17 health metrics from HealthKit and pushes them to Nova's local memory server (port 18790) on a Mac Studio M4 Ultra with 512 GB unified memory. NovaControl exposes the data via `/api/health/snapshot` so Nova can query it directly. All data stays on your local network — nothing touches the cloud.
 
 > **May 2026:** The OpenClaw node.js gateway has been replaced by Nova Gateway v2 (pure Python asyncio). NovaHealth is unaffected — it pushes directly to `nova_healthkit_receiver.py` on the Mac, and NovaControl reads the resulting JSON. No dependency on the gateway layer.
 
@@ -27,10 +27,10 @@ graph TD
 
     Daily & History -->|HTTP POST over WiFi LAN| Receiver
 
-    subgraph Mac["Mac Studio (192.168.1.6)"]
+    subgraph Mac["Mac Studio M4 Ultra · 512 GB (192.168.1.6)"]
         Receiver[nova_healthkit_receiver.py :37450]
         Receiver --> Files["Daily JSON files<br/>~/.openclaw/private/health/<br/>latest.json + YYYY-MM-DD.json"]
-        Receiver --> Memory[(pgvector Memory<br/>source=apple_health)]
+        Receiver --> Memory[(pgvector Memory :18790<br/>source=apple_health<br/>1.2M vectors · 409 domains)]
         Memory --> Corr[nova_health_correlation.py<br/>weekly trend analysis]
         Corr --> Slack[Slack alerts]
         Files --> NovaControl["NovaControl :37400<br/>/api/health/snapshot"]
@@ -55,8 +55,8 @@ sequenceDiagram
     Pusher->>Recv: HTTP POST (WiFi LAN)
     Recv->>Recv: Write YYYY-MM-DD.json (0600 perms)
     Recv->>Recv: Write latest.json (always current)
-    Recv->>PG: INSERT with source=apple_health, privacy=local-only
-    Note over PG: Excluded from cloud-routed LLM prompts
+    Recv->>PG: INSERT via memory server :18790<br/>source=apple_health, privacy=local-only
+    Note over PG: 1.2M vectors · 409 domains · excluded from cloud-routed LLM prompts
     Nova->>NC: GET /api/health/snapshot
     NC->>NC: Read ~/.openclaw/private/health/latest.json
     NC-->>Nova: Latest health metrics as JSON
@@ -116,7 +116,7 @@ graph LR
 
 **Daily Push** — Automatic background refresh at ~6 AM. Also available on-demand via Push Now.
 
-**History Export** — One tap sends up to 5 years of daily aggregated data to Nova's memory server.
+**History Export** — One tap sends up to 5 years of daily aggregated data to Nova's memory server (port 18790, 1.2M+ vectors across 409 domains).
 
 **Minimal UI** — Single screen: authorization status, last push time, latest values, two buttons.
 
@@ -125,8 +125,10 @@ graph LR
 ## Requirements
 
 - iPhone running iOS 16.0+
-- Mac running Nova with `nova_healthkit_receiver.py` on port 37450
-- Mac running NovaControl on port 37400 (exposes `/api/health/snapshot`)
+- Mac Studio M4 Ultra (512 GB unified memory) running Nova
+- `nova_healthkit_receiver.py` on port 37450
+- Nova memory server on port 18790 (pgvector, PostgreSQL 17)
+- NovaControl on port 37400 (exposes `/api/health/snapshot`)
 - Both devices on the same local network
 - HealthKit data sources (Withings, Dexcom, Apple Watch, etc.)
 
